@@ -71,6 +71,7 @@ ENV COMPILEPROTOBUF="${WITHPROTOBUF:+1}"
 ENV DEBIAN_FRONTEND=noninteractive
 
 COPY run.sh /opt
+COPY . /tmp/local
 
 RUN set -eu ; \
     if [ -r /etc/centos-release ]; then \
@@ -143,7 +144,9 @@ RUN set -eu ; \
         make install ; \
     fi ; \
     cd /opt ; \
-    if [ "${OPENLOGREPLICATOR_VERSION}" != "master" ]; then \
+    if [ "${OPENLOGREPLICATOR_VERSION}" = "local" ]; then \
+        cp -r /tmp/local/OpenLogReplicator OpenLogReplicator-local ; \
+    elif [ "${OPENLOGREPLICATOR_VERSION}" != "master" ]; then \
         wget https://github.com/bersler/OpenLogReplicator/archive/refs/tags/v${OPENLOGREPLICATOR_VERSION}.tar.gz ; \
         tar xzvf v${OPENLOGREPLICATOR_VERSION}.tar.gz ; \
         rm v${OPENLOGREPLICATOR_VERSION}.tar.gz ; \
@@ -179,6 +182,7 @@ RUN set -eu ; \
     fi ; \
     chown -R user1:user1 /home/user1 ; \
     chown -R user1:user1 /opt/OpenLogReplicator ; \
+    rm -rf /tmp/local ; \
     if [ "${BUILD_TYPE}" != "Debug" ]; then \
         rm -rf /opt/OpenLogReplicator-${OPENLOGREPLICATOR_VERSION} /opt/rapidjson /opt/rapidjson-${RAPIDJSON_VERSION} ; \
         if [ "${COMPILEKAFKA}" != "" ]; then \
