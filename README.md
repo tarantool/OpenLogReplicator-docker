@@ -1,6 +1,17 @@
 # OpenLogReplicator-docker
 This repository contains basic Dockerfile for [OpenLogReplicator](https://github.com/bersler/OpenLogReplicator)
 
+## License and user rights
+
+OpenLogReplicator-docker is released under the **GNU Affero General Public License (AGPL)**.
+
+If you have received software that is based on OpenLogReplicator-docker, you are legally entitled to obtain the **full corresponding source code** of that software.
+
+For details, see the [LICENSE](LICENSE) file.
+
+---
+
+
 You can compile with Debian or Ubuntu image: `bersler/openlogreplicator`
 
 Refer to `build.sh` for reference how to run docker build command.
