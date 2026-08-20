@@ -1,0 +1,177 @@
+# Dockerfile.base for OpenLogReplicator
+# Copyright (C) 2018-2026 Adam Leszczynski (aleszczynski@bersler.com)
+#
+# This file is part of OpenLogReplicator
+#
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public
+# License along with this program; see the file LICENSE;
+# If not, see <http://www.gnu.org/licenses/>.
+#
+# OpenLogReplicator Base Dockerfile
+# -------------------------------
+# This image contains all build dependencies for OpenLogReplicator.
+# It is used as a base image for building OLR itself.
+
+ARG IMAGE=debian
+ARG VERSION=13.0
+FROM ${IMAGE}:${VERSION} AS olr-base
+
+ARG ARCH=x86_64
+ARG GIDOLR=1001
+ARG UIDOLR=1001
+ARG GIDORA=54322
+ARG WITHKAFKA
+ARG WITHPROMETHEUS
+ARG WITHORACLE
+ARG WITHPROTOBUF
+
+LABEL org.opencontainers.image.authors="Adam Leszczynski <aleszczynski@bersler.com>"
+LABEL org.opencontainers.image.description="OpenLogReplicator build base image with all dependencies"
+
+ENV LC_ALL=C
+ENV LANG=en_US.UTF-8
+ENV ORACLE_MAJOR=23
+ENV ORACLE_MINOR=26
+ENV PROTOBUF_VERSION_DIR=21.12
+ENV PROTOBUF_VERSION=3.21.12
+ENV RAPIDJSON_VERSION=1.1.0
+ENV LIBRDKAFKA_VERSION=2.13.2
+ENV PROMETHEUS_VERSION=1.3.0
+ENV LD_LIBRARY_PATH=/opt/instantclient_${ORACLE_MAJOR}_${ORACLE_MINOR}:/opt/librdkafka/lib:/opt/prometheus/lib:/opt/prometheus/lib64:/opt/protobuf/lib
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Create users and groups
+RUN set -eu; \
+    if ! getent group ${GIDOLR} >/dev/null; then \
+        groupadd -g ${GIDOLR} user1; \
+    fi; \
+    if [ "${GIDOLR}" != "${GIDORA}" ]; then \
+        if ! getent group ${GIDORA} >/dev/null; then \
+            groupadd -g ${GIDORA} oracle; \
+        fi; \
+        useradd -u ${UIDOLR} user1 -g ${GIDOLR} -G ${GIDORA} -d /home/user1; \
+    else \
+        useradd -u ${UIDOLR} user1 -g ${GIDOLR} -d /home/user1; \
+    fi
+
+# 1. Install packages
+RUN set -eu; \
+    if [ -r /etc/centos-release ]; then \
+        if [ -r /etc/yum.repos.d/CentOS-Base.repo ]; then \
+            sed -i \
+                -e 's|^mirrorlist=|#mirrorlist=|g' \
+                -e 's|^#baseurl=http://mirror\.centos\.org/centos/\$releasever/os/\$basearch/|baseurl=https://vault.centos.org/7.9.2009/os/$basearch/|g' \
+                -e 's|^#baseurl=http://mirror\.centos\.org/centos/\$releasever/updates/\$basearch/|baseurl=https://vault.centos.org/7.9.2009/updates/$basearch/|g' \
+                -e 's|^#baseurl=http://mirror\.centos\.org/centos/\$releasever/extras/\$basearch/|baseurl=https://vault.centos.org/7.9.2009/extras/$basearch/|g' \
+                -e 's|^#baseurl=http://mirror\.centos\.org/centos/\$releasever/centosplus/\$basearch/|baseurl=https://vault.centos.org/7.9.2009/centosplus/$basearch/|g' \
+                /etc/yum.repos.d/CentOS-Base.repo; \
+        fi; \
+        yum -y install epel-release coreutils which centos-release-scl; \
+        sed -i \
+            -e 's|^mirrorlist=|#mirrorlist=|g' \
+            -e 's|^#baseurl=http://mirror\.centos\.org/centos/7/sclo/\$basearch/rh/|baseurl=http://vault.centos.org/centos/7/sclo/$basearch/rh/|g' \
+            /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo; \
+        sed -i 's|^enabled=1|enabled=0|g' /etc/yum.repos.d/CentOS-SCLo-scl.repo; \
+        yum -y install devtoolset-9-gcc devtoolset-9-gcc-c++; \
+        yum -y install autoconf automake diffutils file libaio libaio-devel libasan libubsan libnsl libtool make patch tar unzip wget zlib-devel git gdb cmake3 kernel-headers; \
+        ln -s /usr/bin/cmake3 /usr/bin/cmake; \
+    elif [ -r /etc/debian_version ]; then \
+        if [ -r /etc/apt/sources.list.d/debian.sources ]; then \
+            sed -i 's/deb.debian.org/mirror.yandex.ru/g' /etc/apt/sources.list.d/debian.sources; \
+        fi; \
+        apt-get update; \
+        if [ "$(cat /etc/debian_version)" = "12.0" ]; then \
+            apt-get -y install file gcc g++ libaio1 libasan8 libubsan1 libtool libz-dev make patch unzip wget cmake git curl; \
+        elif [ "$(cat /etc/debian_version)" = "13.0" ]; then \
+            apt-get -y install file gcc g++ libaio1t64 libasan8 libubsan1 libtool libz-dev make patch unzip wget cmake git curl; \
+            ln -s libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1; \
+        fi; \
+    fi
+
+# 2. rapidjson
+RUN set -eu; \
+    cd /opt; \
+    wget https://github.com/Tencent/rapidjson/archive/refs/tags/v${RAPIDJSON_VERSION}.tar.gz; \
+    tar xzvf v${RAPIDJSON_VERSION}.tar.gz; \
+    rm v${RAPIDJSON_VERSION}.tar.gz; \
+    ln -s rapidjson-${RAPIDJSON_VERSION} rapidjson
+
+RUN set -eu; \
+    if [ "${RAPIDJSON_VERSION}" = "1.1.0" ]; then \
+        cd /opt/rapidjson; \
+        wget https://github.com/Tencent/rapidjson/commit/3b2441b87f99ab65f37b141a7b548ebadb607b96.diff; \
+        patch -p1 < 3b2441b87f99ab65f37b141a7b548ebadb607b96.diff; \
+        rm 3b2441b87f99ab65f37b141a7b548ebadb607b96.diff; \
+    fi
+
+# 3. Oracle Instant Client
+RUN set -eu; \
+    if [ "${WITHORACLE:+1}" != "" ]; then \
+        cd /opt; \
+        wget https://download.oracle.com/otn_software/linux/instantclient/${ORACLE_MAJOR}${ORACLE_MINOR}000/instantclient-basic-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
+        unzip -o instantclient-basic-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
+        rm instantclient-basic-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
+        rm -rf META-INF; \
+        wget https://download.oracle.com/otn_software/linux/instantclient/${ORACLE_MAJOR}${ORACLE_MINOR}000/instantclient-sdk-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
+        unzip -o instantclient-sdk-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
+        rm instantclient-sdk-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
+        rm -rf META-INF; \
+    fi
+
+# 4. Kafka (librdkafka)
+RUN set -eu; \
+    if [ "${WITHKAFKA:+1}" != "" ]; then \
+        if [ -r /etc/centos-release ]; then export MANPATH=""; source /opt/rh/devtoolset-9/enable; fi; \
+        cd /opt; \
+        wget https://github.com/confluentinc/librdkafka/archive/refs/tags/v${LIBRDKAFKA_VERSION}.tar.gz; \
+        tar xzvf v${LIBRDKAFKA_VERSION}.tar.gz; \
+        rm v${LIBRDKAFKA_VERSION}.tar.gz; \
+        cd /opt/librdkafka-${LIBRDKAFKA_VERSION}; \
+        ./configure --prefix=/opt/librdkafka; \
+        make; \
+        make install; \
+    fi
+
+# 5. Prometheus
+RUN set -eu; \
+    if [ "${WITHPROMETHEUS:+1}" != "" ]; then \
+        if [ -r /etc/centos-release ]; then export MANPATH=""; source /opt/rh/devtoolset-9/enable; fi; \
+        cd /opt; \
+        wget https://github.com/jupp0r/prometheus-cpp/releases/download/v${PROMETHEUS_VERSION}/prometheus-cpp-with-submodules.tar.gz; \
+        tar xzvf prometheus-cpp-with-submodules.tar.gz; \
+        rm prometheus-cpp-with-submodules.tar.gz; \
+        cd /opt/prometheus-cpp-with-submodules; \
+        mkdir _build; \
+        cd _build; \
+        cmake .. -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX:PATH=/opt/prometheus -DENABLE_PUSH=OFF -DENABLE_COMPRESSION=OFF -DENABLE_TESTING=OFF; \
+        cmake --build . --parallel 4; \
+        cmake --install .; \
+        ln -s /opt/prometheus/lib64 /opt/prometheus/lib; \
+    fi
+
+# 6. Protobuf
+RUN set -eu; \
+    if [ "${WITHPROTOBUF:+1}" != "" ]; then \
+        if [ -r /etc/centos-release ]; then export MANPATH=""; source /opt/rh/devtoolset-9/enable; fi; \
+        cd /opt; \
+        wget https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION_DIR}/protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
+        tar xzvf protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
+        rm protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
+        cd /opt/protobuf-${PROTOBUF_VERSION}; \
+        ./configure --prefix=/opt/protobuf; \
+        make; \
+        make install; \
+    fi
+
+# Copy run.sh for the final stage
+COPY run.sh /opt

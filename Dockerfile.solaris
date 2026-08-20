@@ -1,0 +1,103 @@
+# Dockerfile.solaris for OpenLogReplicator
+# Copyright (C) 2018-2026 Adam Leszczynski (aleszczynski@bersler.com)
+#
+# This file is part of OpenLogReplicator
+#
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public
+# License along with this program; see the file LICENSE;
+# If not, see <http://www.gnu.org/licenses/>.
+#
+# OpenLogReplicator Solaris SPARC Dockerfile
+# -----------------------------------------
+# Cross-compiles OpenLogReplicator for Solaris 11 SPARC 64-bit.
+#
+# HOW TO BUILD THIS IMAGE
+# -----------------------
+# Put all downloaded files in the same directory as this Dockerfile
+# Run:
+#       $ docker build -t olr-solaris:local -f Dockerfile.solaris .
+
+ARG BASE_IMAGE=ghcr.io/tarantool/openlogreplicator-base-solaris:latest
+FROM ${BASE_IMAGE} AS builder
+
+ARG OPENLOGREPLICATOR_VERSION=2.0.0
+ARG BUILD_TYPE=Release
+ARG WITHPROMETHEUS=1
+ARG WITHORACLE=1
+ARG WITHPROTOBUF=1
+
+LABEL org.opencontainers.image.authors="Adam Leszczynski <aleszczynski@bersler.com>"
+
+ENV OPENLOGREPLICATOR_VERSION=${OPENLOGREPLICATOR_VERSION}
+ENV TARGET=sparc-sun-solaris2.11
+ENV PREFIX=/opt/cross-solaris/install
+ENV SYSROOT=/opt/solaris-sysroot
+ENV PATH=${PREFIX}/bin:${PATH}
+
+# Build args for cmake
+ENV BUILDARGS="-DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DWITH_RAPIDJSON=/opt/rapidjson -S ../ -B ./"
+ENV BUILDARGS="${BUILDARGS}${WITHORACLE:+ -DWITH_OCI=/opt/usr/oracle/instantclient/18.3}"
+ENV BUILDARGS="${BUILDARGS}${WITHPROTOBUF:+ -DWITH_PROTOBUF=/opt/protobuf-solaris64/install}"
+ENV BUILDARGS="${BUILDARGS}${WITHPROMETHEUS:+ -DWITH_PROMETHEUS=/opt/prometheus-solaris64/install}"
+ENV COMPILEORACLE="${WITHORACLE:+1}"
+ENV COMPILEPROTOBUF="${WITHPROTOBUF:+1}"
+ENV COMPILEPROMETHEUS="${WITHPROMETHEUS:+1}"
+
+# Copy OpenLogReplicator source from build context
+COPY OpenLogReplicator /opt/OpenLogReplicator-${OPENLOGREPLICATOR_VERSION}
+
+# 1. Generate protobuf code (using host protoc)
+RUN set -eu; \
+    if [ "${COMPILEPROTOBUF}" != "" ]; then \
+        cd /opt/OpenLogReplicator-${OPENLOGREPLICATOR_VERSION}/proto; \
+        /opt/protobuf/bin/protoc OraProtoBuf.proto --cpp_out=.; \
+        mv OraProtoBuf.pb.cc ../src/common/OraProtoBuf.pb.cpp; \
+        mv OraProtoBuf.pb.h ../src/common/OraProtoBuf.pb.h; \
+    fi
+
+# 2. Cross-compile OpenLogReplicator for Solaris SPARC 64-bit
+RUN set -eu; \
+    export MANPATH=""; \
+    source /opt/rh/devtoolset-9/enable; \
+    cd /opt/OpenLogReplicator-${OPENLOGREPLICATOR_VERSION}; \
+    mkdir -p build-solaris64; \
+    cd build-solaris64; \
+    cmake \
+        -DCMAKE_TOOLCHAIN_FILE=/opt/cross-solaris/solaris-sparc-toolchain.cmake \
+        ${BUILDARGS} \
+        -DCMAKE_CXX_FLAGS="-I/opt/usr/oracle/instantclient/18.3/include -m64 \
+            -I${PREFIX}/lib/gcc/${TARGET}/11.4.0/include \
+            -I${PREFIX}/lib/gcc/${TARGET}/11.4.0/include-fixed \
+            -I${PREFIX}/${TARGET}/include" \
+        -DCMAKE_C_FLAGS="-m64" \
+        -DCMAKE_EXE_LINKER_FLAGS="-L/opt/usr/oracle/instantclient/18.3/lib/sparcv9 \
+            -L/opt/usr/oracle/instantclient/18.3/lib \
+            -m64 -Wl,--allow-shlib-undefined"; \
+    cmake --build ./ --target OpenLogReplicator -j1
+
+# 3. Copy binary to output location
+RUN set -eu; \
+    mkdir -p /opt/OpenLogReplicator/log /opt/OpenLogReplicator/tmp /opt/OpenLogReplicator/scripts /home/user1; \
+    cp /opt/OpenLogReplicator-${OPENLOGREPLICATOR_VERSION}/build-solaris64/OpenLogReplicator /opt/OpenLogReplicator/; \
+    cp -p /opt/OpenLogReplicator-${OPENLOGREPLICATOR_VERSION}/scripts/gencfg.sql /opt/OpenLogReplicator/scripts/gencfg.sql
+
+# 4. Set ownership
+RUN chown -R ${UIDOLR}:${GIDOLR} /home/user1 /opt/OpenLogReplicator
+
+# 5. Verify the binary architecture
+RUN set -eu; \
+    file /opt/OpenLogReplicator/OpenLogReplicator; \
+    strings /opt/OpenLogReplicator/OpenLogReplicator | grep "modules:" || true
+
+USER user1:oracle
+WORKDIR /opt/OpenLogReplicator

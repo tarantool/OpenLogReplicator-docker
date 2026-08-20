@@ -1,5 +1,5 @@
 #!/bin/sh
-# Script to build Docker images
+# Script to build OpenLogReplicator Docker image for Solaris SPARC
 # Copyright (C) 2018-2026 Adam Leszczynski (aleszczynski@bersler.com)
 #
 # This file is part of OpenLogReplicator
@@ -55,10 +55,10 @@ fi
 
 cd ..
 
-# Build image tag: 1.9.0-13-b586ac8-dev
+# Build image tag
 REGISTRY_PATH=${REGISTRY_PATH:-${CI_REGISTRY_IMAGE:-ghcr.io/tarantool}}
 IMAGE_NAME=${DOCKER_IMAGE_NAME:-openlogreplicator}
-OLR_IMAGE=${OLR_IMAGE:=${REGISTRY_PATH}/${IMAGE_NAME}:${GIT_DESCRIBE}-dev}
+OLR_IMAGE=${OLR_IMAGE:=${REGISTRY_PATH}/${IMAGE_NAME}:${GIT_DESCRIBE}-solaris}
 BUILD_ARGS=""
 
 if [ "$GIDOLR" -eq "0" ] || [ "$UIDOLR" -eq "0" ]; then
@@ -70,35 +70,27 @@ if [ ! -z "${OPENLOGREPLICATOR_VERSION}" ]; then
     BUILD_ARGS="--build-arg OPENLOGREPLICATOR_VERSION=${OPENLOGREPLICATOR_VERSION}"
 fi
 
-if [ -n "${WITHTESTS:-}" ]; then
-    BUILD_ARGS="${BUILD_ARGS} --build-arg WITHTESTS=${WITHTESTS}"
-fi
-
-if [ -n "${OLR_USER:-}" ]; then
-    BUILD_ARGS="${BUILD_ARGS} --build-arg OLR_USER=${OLR_USER}"
-fi
-
-echo "Building image: ${OLR_IMAGE}"
-
 if [ -z "${BASE_IMAGE_NAME:-}" ]; then
     if [ -n "${CI_REGISTRY_IMAGE:-}" ]; then
-        BASE_IMAGE_NAME="${CI_REGISTRY_IMAGE}/${IMAGE_NAME}-base:latest"
+        BASE_IMAGE_NAME="${CI_REGISTRY_IMAGE}/${IMAGE_NAME}-base-solaris:latest"
     else
-        BASE_IMAGE_NAME="ghcr.io/tarantool/openlogreplicator-base:latest"
+        BASE_IMAGE_NAME="ghcr.io/tarantool/openlogreplicator-base-solaris:latest"
     fi
 fi
 
+echo "Building Solaris SPARC image: ${OLR_IMAGE}"
+echo "Using base image: ${BASE_IMAGE_NAME}"
+
 docker build \
 -t ${OLR_IMAGE} \
--f Dockerfile \
+-f Dockerfile.solaris \
 ${BUILD_ARGS} \
 --build-arg BASE_IMAGE=${BASE_IMAGE_NAME} \
 --build-arg GIDOLR=${GIDOLR} \
 --build-arg UIDOLR=${UIDOLR} \
 --build-arg GIDORA=${GIDORA} \
 --build-arg WITHORACLE=1 \
---build-arg WITHKAFKA=1 \
 --build-arg WITHPROMETHEUS=1 \
 --build-arg WITHPROTOBUF=1 \
---build-arg BUILD_TYPE=Debug \
+--build-arg BUILD_TYPE=Release \
 --build-arg OPENLOGREPLICATOR_VERSION="${OLR_BRANCH}" .

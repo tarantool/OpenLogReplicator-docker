@@ -1,0 +1,7 @@
+.git
+.idea
+OpenLogReplicator/.git
+extracted
+extracted-solaris
+build.env
+openlogreplicator-*.tar.gz

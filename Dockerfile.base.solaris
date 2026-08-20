@@ -1,0 +1,268 @@
+# Dockerfile.base.solaris for OpenLogReplicator Solaris SPARC cross-compilation
+# Copyright (C) 2018-2026 Adam Leszczynski (aleszczynski@bersler.com)
+#
+# This file is part of OpenLogReplicator
+#
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public
+# License along with this program; see the file LICENSE;
+# If not, see <http://www.gnu.org/licenses/>.
+#
+# OpenLogReplicator Solaris SPARC Cross-Compilation Base Dockerfile
+# ---------------------------------------------------------------
+# Builds a complete GCC 11.4 cross-compiler toolchain for Solaris SPARC
+# inside Docker, then builds Protobuf and Prometheus for the target.
+#
+# HOW TO BUILD THIS IMAGE
+# -----------------------
+# Requires the following files in build context:
+#   - solaris-sysroot.tar.gz      (Solaris 11 SPARC sysroot)
+#   - oracle-instantclient-18.3-solaris-sparc.tar.gz
+#
+# Run:
+#   $ docker build -t olr-base-solaris:local -f Dockerfile.base.solaris .
+
+ARG BASE_IMAGE=ghcr.io/tarantool/openlogreplicator-base-centos7:latest
+FROM ${BASE_IMAGE} AS olr-base-solaris
+
+ARG GIDOLR=1001
+ARG UIDOLR=1001
+ARG GIDORA=54322
+
+LABEL org.opencontainers.image.authors="Adam Leszczynski <aleszczynski@bersler.com>"
+LABEL org.opencontainers.image.description="OpenLogReplicator Solaris SPARC cross-compilation base image"
+
+ENV LC_ALL=C
+ENV LANG=en_US.UTF-8
+ENV TARGET=sparc-sun-solaris2.11
+ENV PREFIX=/opt/cross-solaris/install
+ENV SYSROOT=/opt/solaris-sysroot
+ENV PATH=${PREFIX}/bin:${PATH}
+
+# Install additional packages needed for cross-compilation
+RUN set -eu; \
+    export MANPATH=""; \
+    source /opt/rh/devtoolset-9/enable; \
+    yum -y install texinfo gperf bison flex help2man gawk ncurses-devel; \
+    yum clean all; \
+    rm -rf /var/cache/yum
+
+# =============================================================================
+# PART 0: Install user-supplied Solaris artifacts
+# =============================================================================
+
+COPY solaris-sysroot.tar.gz /tmp/solaris-sysroot.tar.gz
+COPY oracle-instantclient-18.3-solaris-sparc.tar.gz /tmp/oracle-instantclient-18.3-solaris-sparc.tar.gz
+RUN set -eu; \
+    mkdir -p ${SYSROOT}; \
+    tar xzf /tmp/solaris-sysroot.tar.gz -C ${SYSROOT}; \
+    rm /tmp/solaris-sysroot.tar.gz; \
+    ls ${SYSROOT}/usr/lib/sparcv9/crt1.o >/dev/null; \
+    ls ${SYSROOT}/lib/sparcv9/libc.so.1 >/dev/null; \
+    tar xzf /tmp/oracle-instantclient-18.3-solaris-sparc.tar.gz -C /opt --strip-components=1; \
+    rm /tmp/oracle-instantclient-18.3-solaris-sparc.tar.gz; \
+    cd /opt/usr/oracle/instantclient/18.3/lib; \
+    ln -sf libnnz18.so libnnz19.so; \
+    cd /opt/usr/oracle/instantclient/18.3/lib/64 || cd /opt/usr/oracle/instantclient/18.3/lib/sparcv9; \
+    ln -sf libnnz18.so libnnz19.so 2>/dev/null || true
+
+# =============================================================================
+# PART 1: Build Cross-Compiler Toolchain from source
+# =============================================================================
+
+# Download all toolchain sources
+RUN set -eu; \
+    mkdir -p /opt/gcc-sources; \
+    cd /opt/gcc-sources; \
+    curl -L -O https://ftp.gnu.org/gnu/gcc/gcc-11.4.0/gcc-11.4.0.tar.xz; \
+    curl -L -O https://ftp.gnu.org/gnu/binutils/binutils-2.40.tar.xz; \
+    curl -L -O https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz; \
+    curl -L -O https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.0.tar.xz; \
+    curl -L -O https://ftp.gnu.org/gnu/mpc/mpc-1.3.1.tar.gz
+
+# Build GMP, MPFR, MPC (required for GCC)
+RUN set -eu; \
+    export MANPATH=""; \
+    source /opt/rh/devtoolset-9/enable; \
+    mkdir -p /opt/cross-solaris/build; \
+    cd /opt/cross-solaris/build; \
+    tar xf /opt/gcc-sources/gmp-6.2.1.tar.xz; \
+    mkdir build-gmp && cd build-gmp; \
+    ../gmp-6.2.1/configure --prefix=${PREFIX} --disable-shared --enable-static; \
+    make -j$(nproc) && make install; \
+    cd /opt/cross-solaris/build; \
+    tar xf /opt/gcc-sources/mpfr-4.2.0.tar.xz; \
+    mkdir build-mpfr && cd build-mpfr; \
+    ../mpfr-4.2.0/configure --prefix=${PREFIX} --with-gmp=${PREFIX} --disable-shared --enable-static; \
+    make -j$(nproc) && make install; \
+    cd /opt/cross-solaris/build; \
+    tar xzf /opt/gcc-sources/mpc-1.3.1.tar.gz; \
+    mkdir build-mpc && cd build-mpc; \
+    ../mpc-1.3.1/configure --prefix=${PREFIX} --with-gmp=${PREFIX} --with-mpfr=${PREFIX} --disable-shared --enable-static; \
+    make -j$(nproc) && make install
+
+# Build Binutils with 64-bit support
+RUN set -eu; \
+    export MANPATH=""; \
+    source /opt/rh/devtoolset-9/enable; \
+    cd /opt/cross-solaris/build; \
+    tar xf /opt/gcc-sources/binutils-2.40.tar.xz; \
+    mkdir build-binutils && cd build-binutils; \
+    ../binutils-2.40/configure \
+        --target=${TARGET} \
+        --prefix=${PREFIX} \
+        --with-sysroot=${SYSROOT} \
+        --enable-targets=sparc-sun-solaris2.11,sparcv9-sun-solaris2.11 \
+        --enable-64-bit-bfd \
+        --disable-nls \
+        --disable-werror; \
+    make -j$(nproc); \
+    make install
+
+# Build GCC with multilib support
+RUN set -eu; \
+    export MANPATH=""; \
+    source /opt/rh/devtoolset-9/enable; \
+    cd /opt/cross-solaris/build; \
+    tar xf /opt/gcc-sources/gcc-11.4.0.tar.xz; \
+    mkdir build-gcc && cd build-gcc; \
+    ../gcc-11.4.0/configure \
+        --target=${TARGET} \
+        --prefix=${PREFIX} \
+        --with-sysroot=${SYSROOT} \
+        --with-gmp=${PREFIX} \
+        --with-mpfr=${PREFIX} \
+        --with-mpc=${PREFIX} \
+        --with-gnu-as \
+        --with-gnu-ld \
+        --with-as=${PREFIX}/bin/${TARGET}-as \
+        --with-ld=${PREFIX}/bin/${TARGET}-ld \
+        --enable-languages=c,c++ \
+        --enable-multilib \
+        --disable-libgcj \
+        --disable-nls; \
+    make -j$(nproc) all-gcc; \
+    make install-gcc; \
+    make -j$(nproc) all-target-libgcc; \
+    make install-target-libgcc; \
+    make -j$(nproc) all-target-libstdc++-v3; \
+    make install-target-libstdc++-v3
+
+# Verify the cross-compiler
+RUN set -eu; \
+    ${PREFIX}/bin/${TARGET}-gcc -print-multi-lib; \
+    echo "int main() { return 0; }" > /tmp/test.c; \
+    ${TARGET}-gcc -m64 --sysroot=${SYSROOT} -c /tmp/test.c -o /tmp/test64.o; \
+    file /tmp/test64.o; \
+    rm /tmp/test.c /tmp/test64.o; \
+    echo '#include <vector>' > /tmp/test.cpp; \
+    echo 'int main() { std::vector<int> v; return 0; }' >> /tmp/test.cpp; \
+    ${TARGET}-g++ -m64 -std=c++11 --sysroot=${SYSROOT} -c /tmp/test.cpp -o /tmp/test64.o; \
+    file /tmp/test64.o; \
+    rm /tmp/test.cpp /tmp/test64.o
+
+# =============================================================================
+# PART 2: Build Dependencies for Solaris SPARC
+# =============================================================================
+
+# Build Protobuf for Solaris SPARC 64-bit (static)
+RUN set -eu; \
+    export MANPATH=""; \
+    source /opt/rh/devtoolset-9/enable; \
+    cd /opt; \
+    rm -rf protobuf-${PROTOBUF_VERSION}; \
+    wget https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION_DIR}/protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
+    tar xzvf protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
+    rm protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
+    mkdir -p /opt/protobuf-solaris64; \
+    cd /opt/protobuf-solaris64; \
+    CC=${TARGET}-gcc \
+    CXX=${TARGET}-g++ \
+    CFLAGS="-m64 --sysroot=${SYSROOT}" \
+    CXXFLAGS="-m64 -std=c++11 --sysroot=${SYSROOT} \
+        -I${PREFIX}/lib/gcc/${TARGET}/11.4.0/include \
+        -I${PREFIX}/lib/gcc/${TARGET}/11.4.0/include-fixed \
+        -I${PREFIX}/${TARGET}/include \
+        -I${PREFIX}/${TARGET}/include/c++/11.4.0 \
+        -I${PREFIX}/${TARGET}/include/c++/11.4.0/${TARGET}" \
+    LDFLAGS="-m64" \
+    /opt/protobuf-${PROTOBUF_VERSION}/configure \
+        --host=${TARGET} \
+        --prefix=/opt/protobuf-solaris64/install \
+        --with-protoc=protoc \
+        --disable-shared \
+        --enable-static; \
+    make -j$(nproc); \
+    make install; \
+    rm -rf /opt/protobuf-${PROTOBUF_VERSION}; \
+    ls -la /opt/protobuf-solaris64/install/lib/
+
+# Build Prometheus C++ Client for Solaris SPARC 64-bit (static)
+RUN set -eu; \
+    export MANPATH=""; \
+    source /opt/rh/devtoolset-9/enable; \
+    mkdir -p /opt/prometheus-solaris64; \
+    cd /opt/prometheus-solaris64; \
+    cmake3 /opt/prometheus-cpp-with-submodules \
+        -DCMAKE_SYSTEM_NAME=SunOS \
+        -DCMAKE_SYSTEM_PROCESSOR=sparc \
+        -DCMAKE_C_COMPILER=${TARGET}-gcc \
+        -DCMAKE_CXX_COMPILER=${TARGET}-g++ \
+        -DCMAKE_C_FLAGS="-m64 --sysroot=${SYSROOT}" \
+        -DCMAKE_CXX_FLAGS="-m64 -std=c++11 --sysroot=${SYSROOT} \
+            -I${PREFIX}/lib/gcc/${TARGET}/11.4.0/include \
+            -I${PREFIX}/lib/gcc/${TARGET}/11.4.0/include-fixed \
+            -I${PREFIX}/${TARGET}/include \
+            -I${PREFIX}/${TARGET}/include/c++/11.4.0 \
+            -I${PREFIX}/${TARGET}/include/c++/11.4.0/${TARGET}" \
+        -DCMAKE_EXE_LINKER_FLAGS="-m64" \
+        -DCMAKE_SHARED_LINKER_FLAGS="-m64" \
+        -DCMAKE_INSTALL_PREFIX=/opt/prometheus-solaris64/install \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DENABLE_PUSH=OFF \
+        -DENABLE_COMPRESSION=OFF \
+        -DENABLE_TESTING=OFF; \
+    cmake3 --build . --parallel $(nproc); \
+    cmake3 --install .; \
+    ls -la /opt/prometheus-solaris64/install/lib/
+
+# =============================================================================
+# PART 3: Create CMake toolchain file
+# =============================================================================
+
+RUN set -eu; \
+    printf '%s\n' \
+        'set(CMAKE_SYSTEM_NAME SunOS)' \
+        'set(CMAKE_SYSTEM_PROCESSOR sparc)' \
+        'set(CMAKE_SYSTEM_VERSION 5.11)' \
+        "set(CMAKE_C_COMPILER ${PREFIX}/bin/${TARGET}-gcc)" \
+        "set(CMAKE_CXX_COMPILER ${PREFIX}/bin/${TARGET}-g++)" \
+        "set(CMAKE_SYSROOT ${SYSROOT})" \
+        'set(CMAKE_FIND_ROOT_PATH' \
+        "    ${SYSROOT}" \
+        '    /opt/usr/oracle/instantclient/18.3' \
+        '    /opt/protobuf-solaris64/install' \
+        '    /opt/prometheus-solaris64/install' \
+        '    /opt/rapidjson' \
+        ')' \
+        'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' \
+        'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' \
+        'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' \
+        'set(CMAKE_CXX_FLAGS_INIT "-D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS")' \
+        'set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")' \
+        > /opt/cross-solaris/solaris-sparc-toolchain.cmake; \
+    ls -la /opt/cross-solaris/solaris-sparc-toolchain.cmake; \
+    cat /opt/cross-solaris/solaris-sparc-toolchain.cmake
+
+# Cleanup build artifacts to reduce image size
+RUN set -eu; \
+    rm -rf /opt/gcc-sources /opt/cross-solaris/build

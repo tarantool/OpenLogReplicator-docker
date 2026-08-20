@@ -1,0 +1,621 @@
+# GitLab CI for OpenLogReplicator Docker builds
+# Copyright (C) 2018-2026 Adam Leszczynski (aleszczynski@bersler.com)
+#
+# This file is part of OpenLogReplicator
+#
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+
+variables:
+  OLR_BRANCH: "${OLR_BRANCH:-2.0.0}"
+  GIDOLR: "1001"
+  UIDOLR: "1001"
+  GIDORA: "54322"
+  DOCKER_IMAGE_NAME: openlogreplicator
+  NEXUS_DEV_PATH: "openlogreplicator/dev"
+  NEXUS_PROD_PATH: "openlogreplicator/prod"
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
+    - if: '$CI_PIPELINE_SOURCE == "pipeline"'
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+stages:
+  - build-base
+  - build
+  - test
+
+.docker:
+  image: "$OLR_CI_IMAGE"
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    KUBERNETES_CPU_REQUEST: "2"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
+    KUBERNETES_HELPER_CPU_REQUEST: "0.5"
+    KUBERNETES_HELPER_CPU_LIMIT: "1"
+    KUBERNETES_HELPER_MEMORY_REQUEST: "1Gi"
+    KUBERNETES_HELPER_MEMORY_LIMIT: "2Gi"
+    KUBERNETES_SERVICE_EPHEMERAL_STORAGE_LIMIT: "100Gi"
+    KUBERNETES_SERVICE_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_SERVICE_MEMORY_LIMIT: "16Gi"
+  tags:
+    - $OLR_CI_RUNNER
+  services:
+    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26.1.4-dind
+      alias: docker
+
+# =============================================================================
+# BASE IMAGES (dependencies only)
+# =============================================================================
+
+# Debian base image
+build base image debian:
+  extends: .docker
+  stage: build-base
+  interruptible: true
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-debian"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      changes:
+        - Dockerfile.base
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+      BASE_IMAGE_NAME="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+      LATEST_BASE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+
+      echo "Building Debian base image: ${BASE_IMAGE_NAME}"
+      docker build \
+        -t "${BASE_IMAGE_NAME}" \
+        -t "${LATEST_BASE}" \
+        -f Dockerfile.base \
+        --build-arg IMAGE=debian \
+        --build-arg VERSION=13.0 \
+        --build-arg GIDOLR=${GIDOLR} \
+        --build-arg UIDOLR=${UIDOLR} \
+        --build-arg WITHORACLE=1 \
+        --build-arg WITHKAFKA=1 \
+        --build-arg WITHPROMETHEUS=1 \
+        --build-arg WITHPROTOBUF=1 \
+        .
+
+      echo "Pushing Debian base images"
+      docker push "${BASE_IMAGE_NAME}"
+      docker push "${LATEST_BASE}"
+
+# CentOS 7 base image
+build base image centos7:
+  extends: .docker
+  stage: build-base
+  interruptible: true
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-centos7"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      changes:
+        - Dockerfile.base
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+      BASE_IMAGE_NAME="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+      LATEST_BASE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+
+      echo "Building CentOS 7 base image: ${BASE_IMAGE_NAME}"
+      docker build \
+        -t "${BASE_IMAGE_NAME}" \
+        -t "${LATEST_BASE}" \
+        -f Dockerfile.base \
+        --build-arg IMAGE=centos \
+        --build-arg VERSION=7 \
+        --build-arg GIDOLR=${GIDOLR} \
+        --build-arg UIDOLR=${UIDOLR} \
+        --build-arg WITHORACLE=1 \
+        --build-arg WITHKAFKA=1 \
+        --build-arg WITHPROMETHEUS=1 \
+        --build-arg WITHPROTOBUF=1 \
+        .
+
+      echo "Pushing CentOS 7 base images"
+      docker push "${BASE_IMAGE_NAME}"
+      docker push "${LATEST_BASE}"
+
+# Solaris SPARC base image
+build base image solaris:
+  extends: .docker
+  stage: build-base
+  interruptible: true
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-solaris"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      changes:
+        - Dockerfile.base.solaris
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+      BASE_IMAGE_NAME="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+      LATEST_BASE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+
+      : "${NEXUS_URL:?NEXUS_URL must be set}"
+      : "${NEXUS_USER:?NEXUS_USER must be set}"
+      : "${NEXUS_PASS:?NEXUS_PASS must be set}"
+
+      echo "Downloading proprietary Solaris build artifacts"
+      curl --fail --location --silent --show-error \
+        --user "${NEXUS_USER}:${NEXUS_PASS}" \
+        "${NEXUS_URL%/}/openlogreplicator/solaris/solaris-sysroot.tar.gz" \
+        --output solaris-sysroot.tar.gz
+      curl --fail --location --silent --show-error \
+        --user "${NEXUS_USER}:${NEXUS_PASS}" \
+        "${NEXUS_URL%/}/openlogreplicator/solaris/oracle-instantclient-18.3-solaris-sparc.tar.gz" \
+        --output oracle-instantclient-18.3-solaris-sparc.tar.gz
+
+      echo "Building Solaris SPARC base image: ${BASE_IMAGE_NAME}"
+      docker build \
+        -t "${BASE_IMAGE_NAME}" \
+        -t "${LATEST_BASE}" \
+        -f Dockerfile.base.solaris \
+        --build-arg BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}-base-centos7:latest" \
+        --build-arg GIDOLR=${GIDOLR} \
+        --build-arg UIDOLR=${UIDOLR} \
+        .
+
+      echo "Pushing Solaris SPARC base images"
+      docker push "${BASE_IMAGE_NAME}"
+      docker push "${LATEST_BASE}"
+
+# ----------------------------------------------------------------------------
+# Standalone C++ unit tests (tests/unit/*.cpp).
+# ----------------------------------------------------------------------------
+unit tests:
+  stage: test
+  interruptible: true
+  needs: ["build dev image debian"]
+  tags:
+    - $CI_RUNNER
+  image:
+    name: $CI_REGISTRY_IMAGE/${DOCKER_IMAGE_NAME}:${OLR_DEV_DEBIAN_TAG}
+    entrypoint: [""]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "dev"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - cd /opt/OpenLogReplicator-local
+    - |
+      for t in tests/unit/*.cpp; do
+        echo "=== $t ==="
+        g++ -std=c++17 -I/opt/rapidjson/include "$t" -o /tmp/ut && /tmp/ut
+      done
+
+# ----------------------------------------------------------------------------
+# Regression tests against Oracle XE 21c and Oracle Free 23c.
+# ----------------------------------------------------------------------------
+.test_oracle:
+  extends: .docker
+  stage: test
+  interruptible: true
+  needs: ["build dev image debian"]
+  image:
+    name: $CI_REGISTRY_IMAGE/${DOCKER_IMAGE_NAME}:${OLR_DEV_DEBIAN_TAG}
+    entrypoint: [""]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "dev"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+  timeout: 60m
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+    - cd /opt/OpenLogReplicator-local
+  script:
+    - make test ORACLE_TARGET="${ORACLE_TARGET}"
+  after_script:
+    # Collect oracle logs + healthcheck history + generated fixtures into
+    # $CI_PROJECT_DIR so they end up in job artifacts. Tolerant of every step
+    # missing — after_script must succeed even if the job exploded early.
+    - |
+      set +e
+      cd /opt/OpenLogReplicator-local || exit 0
+      OUT="${CI_PROJECT_DIR}/ci-artifacts/${ORACLE_TARGET}"
+      mkdir -p "$OUT"
+      COMPOSE_FILE="tests/1-environments/${ORACLE_TARGET}/docker-compose.yaml"
+      if command -v docker >/dev/null 2>&1; then
+        docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps > "$OUT/oracle.log" 2>&1
+        CID=$(docker compose -f "$COMPOSE_FILE" ps -q oracle 2>/dev/null)
+        if [ -n "$CID" ]; then
+          docker inspect "$CID" > "$OUT/oracle-inspect.json"
+        fi
+        cp -r tests/3-generated "$OUT/3-generated" 2>/dev/null
+        cp -r tests/.work       "$OUT/work"        2>/dev/null
+        make down ORACLE_TARGET="${ORACLE_TARGET}" 2>/dev/null
+      fi
+      exit 0
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - ci-artifacts/
+
+test xe-21:
+  extends: .test_oracle
+  variables:
+    ORACLE_TARGET: xe-21
+    GIT_STRATEGY: none
+
+test free-23:
+  extends: .test_oracle
+  variables:
+    ORACLE_TARGET: free-23
+    GIT_STRATEGY: none
+
+# =============================================================================
+# DEV IMAGES (built on MRs)
+# =============================================================================
+
+# Debian dev image
+build dev image debian:
+  extends: .docker
+  stage: build
+  interruptible: true
+  needs: []  # не ждёт предыдущие стадии
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-debian"
+    WITHTESTS: "1"
+    OLR_USER: "root"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "dev"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      when: always
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+      BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+      echo "Using base image: ${BASE_IMAGE}"
+
+      BASE_IMAGE_NAME="${BASE_IMAGE}" ./build-dev.sh
+
+      # Get version info from the generated OpenLogReplicator clone
+      cd OpenLogReplicator
+      GIT_DESCRIBE=$(git describe --tags --long 2>/dev/null | sed 's/^v//' | sed 's/-g/-/')
+      cd ..
+      echo "Version: ${GIT_DESCRIBE}"
+
+      # Tag with debian suffix
+      OLR_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}-dev"
+      DEBIAN_TAG="${GIT_DESCRIBE}-dev-debian"
+      DEBIAN_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${DEBIAN_TAG}"
+      LATEST_DEV="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:latest-dev-debian"
+
+      echo "Tagging and pushing Debian dev image: ${DEBIAN_IMAGE}"
+      docker tag "${OLR_IMAGE}" "${DEBIAN_IMAGE}"
+      docker push "${DEBIAN_IMAGE}"
+
+      docker tag "${OLR_IMAGE}" "${LATEST_DEV}"
+      docker push "${LATEST_DEV}"
+
+      docker push "${OLR_IMAGE}"
+
+      echo "OLR_DEV_DEBIAN_TAG=${DEBIAN_TAG}" > build.env
+
+      # Extract binary
+      apt-get update && apt-get install -y patchelf
+
+      ARCHIVE_NAME="openlogreplicator-${GIT_DESCRIBE}-debian.tar.gz"
+      ./extract-binary.sh "${DEBIAN_IMAGE}" "${ARCHIVE_NAME}"
+
+      echo "Archive created: ${ARCHIVE_NAME}"
+      echo "File size: $(stat -c%s "./${ARCHIVE_NAME}" 2>/dev/null || stat -f%z "./${ARCHIVE_NAME}" 2>/dev/null) bytes"
+
+      # Upload to Nexus
+      ./upload-to-nexus.sh "${ARCHIVE_NAME}" "${NEXUS_DEV_PATH}"
+  artifacts:
+    reports:
+      dotenv: build.env
+
+build dev image centos7:
+  extends: .docker
+  stage: build
+  interruptible: true
+  needs: []  # не ждёт предыдущие стадии
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-centos7"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "dev"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      when: always
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+
+      BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+      echo "Using base image: ${BASE_IMAGE}"
+
+      # Build with custom base image
+      BASE_IMAGE_NAME="${BASE_IMAGE}" ./build-dev.sh
+
+      # Get version info from the generated OpenLogReplicator clone
+      cd OpenLogReplicator
+      GIT_DESCRIBE=$(git describe --tags --long 2>/dev/null | sed 's/^v//' | sed 's/-g/-/')
+      cd ..
+      echo "Version: ${GIT_DESCRIBE}"
+
+      # Tag with centos7 suffix
+      OLR_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}-dev"
+      CENTOS_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}-dev-centos7"
+      LATEST_DEV="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:latest-dev-centos7"
+
+      echo "Tagging and pushing CentOS 7 dev image: ${CENTOS_IMAGE}"
+      docker tag "${OLR_IMAGE}" "${CENTOS_IMAGE}"
+      docker push "${CENTOS_IMAGE}"
+
+      docker tag "${OLR_IMAGE}" "${LATEST_DEV}"
+      docker push "${LATEST_DEV}"
+
+      docker push "${OLR_IMAGE}"
+
+      # Extract binary
+      apt-get update && apt-get install -y patchelf
+
+      ARCHIVE_NAME="openlogreplicator-${GIT_DESCRIBE}-centos7.tar.gz"
+      ./extract-binary.sh "${CENTOS_IMAGE}" "${ARCHIVE_NAME}"
+
+      echo "Archive created: ${ARCHIVE_NAME}"
+      echo "File size: $(stat -c%s "./${ARCHIVE_NAME}" 2>/dev/null || stat -f%z "./${ARCHIVE_NAME}" 2>/dev/null) bytes"
+
+      # Upload to Nexus
+      ./upload-to-nexus.sh "${ARCHIVE_NAME}" "${NEXUS_DEV_PATH}"
+
+# Solaris SPARC dev image
+build dev image solaris:
+  extends: .docker
+  stage: build
+  interruptible: true
+  needs: []  # не ждёт предыдущие стадии
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-solaris"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "dev"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      when: always
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+      BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+      echo "Using base image: ${BASE_IMAGE}"
+
+      # Build with custom base image
+      BASE_IMAGE_NAME="${BASE_IMAGE}" ./build-solaris.sh
+
+      # Get version info from the generated OpenLogReplicator clone
+      cd OpenLogReplicator
+      GIT_DESCRIBE=$(git describe --tags --long 2>/dev/null | sed 's/^v//' | sed 's/-g/-/')
+      cd ..
+      echo "Version: ${GIT_DESCRIBE}"
+
+      # Tag with solaris suffix
+      OLR_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}-solaris"
+      LATEST_DEV="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:latest-dev-solaris"
+
+      echo "Tagging and pushing Solaris SPARC dev image: ${OLR_IMAGE}"
+      docker tag "${OLR_IMAGE}" "${LATEST_DEV}"
+      docker push "${LATEST_DEV}"
+      docker push "${OLR_IMAGE}"
+
+      # Extract binary
+      ARCHIVE_NAME="openlogreplicator-${GIT_DESCRIBE}-solaris.tar.gz"
+      ./extract-solaris.sh "${OLR_IMAGE}" "${ARCHIVE_NAME}"
+
+      echo "Archive created: ${ARCHIVE_NAME}"
+      echo "File size: $(stat -c%s "./${ARCHIVE_NAME}" 2>/dev/null || stat -f%z "./${ARCHIVE_NAME}" 2>/dev/null) bytes"
+
+      # Upload to Nexus
+      ./upload-to-nexus.sh "${ARCHIVE_NAME}" "${NEXUS_DEV_PATH}"
+
+# =============================================================================
+# RELEASE IMAGES (built on tags)
+# =============================================================================
+
+# Debian release image
+build release image debian:
+  extends: .docker
+  stage: build
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-debian"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "prod"'
+      when: always
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
+      when: always
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+      BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+      echo "Using base image: ${BASE_IMAGE}"
+
+      # Build with custom base image
+      BASE_IMAGE_NAME="${BASE_IMAGE}" ./build-prod.sh
+
+      # Get version info from the generated OpenLogReplicator clone
+      cd OpenLogReplicator
+      GIT_DESCRIBE=$(git describe --tags --long 2>/dev/null | sed 's/^v//' | sed 's/-g/-/')
+      cd ..
+      echo "Version: ${GIT_DESCRIBE}"
+
+      # Tag with debian suffix
+      OLR_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}"
+      DEBIAN_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}-debian"
+      OLR_VERSION=$(echo "$GIT_DESCRIBE" | cut -d'-' -f1)
+      RELEASE_TAG="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${OLR_VERSION}-debian"
+      LATEST_TAG="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:latest-debian"
+
+      echo "Tagging and pushing Debian release images"
+      docker tag "${OLR_IMAGE}" "${DEBIAN_IMAGE}"
+      docker push "${DEBIAN_IMAGE}"
+
+      docker tag "${OLR_IMAGE}" "${RELEASE_TAG}"
+      docker push "${RELEASE_TAG}"
+
+      docker tag "${OLR_IMAGE}" "${LATEST_TAG}"
+      docker push "${LATEST_TAG}"
+
+      docker push "${OLR_IMAGE}"
+
+      # Extract binary
+      apt-get update && apt-get install -y patchelf
+
+      ARCHIVE_NAME="openlogreplicator-${GIT_DESCRIBE}-debian.tar.gz"
+      ./extract-binary.sh "${DEBIAN_IMAGE}" "${ARCHIVE_NAME}"
+
+      echo "Archive created: ${ARCHIVE_NAME}"
+      echo "File size: $(stat -c%s "./${ARCHIVE_NAME}" 2>/dev/null || stat -f%z "./${ARCHIVE_NAME}" 2>/dev/null) bytes"
+
+      # Upload to Nexus
+      ./upload-to-nexus.sh "${ARCHIVE_NAME}" "${NEXUS_PROD_PATH}"
+
+# CentOS 7 release image
+build release image centos7:
+  extends: .docker
+  stage: build
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-centos7"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "prod"'
+      when: always
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
+      when: always
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+      BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+      echo "Using base image: ${BASE_IMAGE}"
+
+      # Build with custom base image
+      BASE_IMAGE_NAME="${BASE_IMAGE}" ./build-prod.sh
+
+      # Get version info from the generated OpenLogReplicator clone
+      cd OpenLogReplicator
+      GIT_DESCRIBE=$(git describe --tags --long 2>/dev/null | sed 's/^v//' | sed 's/-g/-/')
+      cd ..
+      echo "Version: ${GIT_DESCRIBE}"
+
+      # Tag with centos7 suffix
+      OLR_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}"
+      CENTOS_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}-centos7"
+      OLR_VERSION=$(echo "$GIT_DESCRIBE" | cut -d'-' -f1)
+      RELEASE_TAG="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${OLR_VERSION}-centos7"
+      LATEST_TAG="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:latest-centos7"
+
+      echo "Tagging and pushing CentOS 7 release images"
+      docker tag "${OLR_IMAGE}" "${CENTOS_IMAGE}"
+      docker push "${CENTOS_IMAGE}"
+
+      docker tag "${OLR_IMAGE}" "${RELEASE_TAG}"
+      docker push "${RELEASE_TAG}"
+
+      docker tag "${OLR_IMAGE}" "${LATEST_TAG}"
+      docker push "${LATEST_TAG}"
+
+      # Extract binary
+      apt-get update && apt-get install -y patchelf
+
+      ARCHIVE_NAME="openlogreplicator-${GIT_DESCRIBE}-centos7.tar.gz"
+      ./extract-binary.sh "${CENTOS_IMAGE}" "${ARCHIVE_NAME}"
+
+      echo "Archive created: ${ARCHIVE_NAME}"
+      echo "File size: $(stat -c%s "./${ARCHIVE_NAME}" 2>/dev/null || stat -f%z "./${ARCHIVE_NAME}" 2>/dev/null) bytes"
+
+      # Upload to Nexus
+      ./upload-to-nexus.sh "${ARCHIVE_NAME}" "${NEXUS_PROD_PATH}"
+
+# Solaris SPARC release image
+build release image solaris:
+  extends: .docker
+  stage: build
+  variables:
+    DOCKER_BASE_IMAGE_NAME: "${DOCKER_IMAGE_NAME}-base-solaris"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "prod"'
+      when: always
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
+      when: always
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
+  script:
+    - |
+      BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+      echo "Using base image: ${BASE_IMAGE}"
+
+      # Build with custom base image
+      BASE_IMAGE_NAME="${BASE_IMAGE}" ./build-solaris.sh
+
+      # Get version info from the generated OpenLogReplicator clone
+      cd OpenLogReplicator
+      GIT_DESCRIBE=$(git describe --tags --long 2>/dev/null | sed 's/^v//' | sed 's/-g/-/')
+      cd ..
+      echo "Version: ${GIT_DESCRIBE}"
+
+      # Tag with solaris suffix
+      OLR_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:${GIT_DESCRIBE}-solaris"
+      LATEST_TAG="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}:latest-solaris"
+
+      echo "Tagging and pushing Solaris SPARC release images"
+      docker tag "${OLR_IMAGE}" "${LATEST_TAG}"
+      docker push "${LATEST_TAG}"
+      docker push "${OLR_IMAGE}"
+
+      # Extract binary
+      ARCHIVE_NAME="openlogreplicator-${GIT_DESCRIBE}-solaris.tar.gz"
+      ./extract-solaris.sh "${OLR_IMAGE}" "${ARCHIVE_NAME}"
+
+      echo "Archive created: ${ARCHIVE_NAME}"
+      echo "File size: $(stat -c%s "./${ARCHIVE_NAME}" 2>/dev/null || stat -f%z "./${ARCHIVE_NAME}" 2>/dev/null) bytes"
+
+      # Upload to Nexus
+      ./upload-to-nexus.sh "${ARCHIVE_NAME}" "${NEXUS_PROD_PATH}"

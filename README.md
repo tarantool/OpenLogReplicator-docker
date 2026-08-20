@@ -1,50 +1,129 @@
-# OpenLogReplicator-docker
-This repository contains basic Dockerfile for [OpenLogReplicator](https://github.com/bersler/OpenLogReplicator)
+# Fork of OpenLogReplicator-docker
 
-## License and user rights
+Docker build files for
+[`tarantool/openlogreplicator`](https://github.com/tarantool/openlogreplicator),
+an Oracle change data capture application.
 
-OpenLogReplicator-docker is released under the **GNU Affero General Public License (AGPL)**.
+## Requirements
 
-If you have received software that is based on OpenLogReplicator-docker, you are legally entitled to obtain the **full corresponding source code** of that software.
+- Docker
+- Git
+- access to `ghcr.io/tarantool/openlogreplicator-base:latest`, or a locally
+  built base image
 
-For details, see the [LICENSE](LICENSE) file.
+## Build OpenLogReplicator
 
----
+The build scripts clone or update the OpenLogReplicator sources in
+`OpenLogReplicator/`, determine the image version with `git describe`, and then
+run the appropriate Docker build. The nested clone's `.git` directory is
+excluded from the Docker build context.
 
+Build a development image:
 
-You can compile with Debian or Ubuntu image: `bersler/openlogreplicator`
+```bash
+./build-dev.sh
+```
 
-Refer to `build.sh` for reference how to run docker build command.
+Build a release image:
 
-The script will automatically create a Docker image with the main binary placed in `/opt/OpenLogReplicator`. 
-During image creation, you should see version banner in the output:
+```bash
+./build-prod.sh
+```
 
-    + ./src/OpenLogReplicator
-    2024-01-27 23:55:02 INFO  00000 OpenLogReplicator v1.5.0 (C) 2018-2024 by Adam Leszczynski (aleszczynski@bersler.com), see LICENSE file for licensing information
-    2024-01-27 23:55:02 INFO  00000 arch: x86_64, system: Linux, release: 6.1.0-16-amd64, build: Release, compiled: 2024-01-27 22:49, modules: Kafka OCI Prometheus Protobuf
+The default image names are:
 
-This would mean that the binary is correctly built.
-You can provide custom `GID/UID` - which is used to run OpenLogReplicator.
-The configured group/user is used by binaries in the Docker image to run the OpenLogReplicator process.
-Choose the group/user that would have appropriate privileges to access the database files (write checkpoint files and read redo log files).
+- `ghcr.io/tarantool/openlogreplicator:<version>-dev`
+- `ghcr.io/tarantool/openlogreplicator:<version>`
 
-Example:
+The scripts accept these environment variables. In GitLab CI they
+automatically use the internal source repository and project registry when
+`CI_JOB_TOKEN` and `CI_REGISTRY_IMAGE` are available; explicit overrides still
+take precedence.
 
-    mkdir script
-    mkdir checkpoint
-    vi scripts/OpenLogReplicator.json
-    # create some content for config and run
-    docker run --name OpenLogReplicator -v /opt/fast-recovery-area:/opt/fast-recovery-area \
-    -v ./scripts:/opt/OpenLogReplicator/scripts \
-    -v ./checkpoint:/opt/OpenLogReplicator/checkpoint \
-    bersler/openlogreplicator:debian-12.0
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OLR_REPO_URL` | GitHub, or internal GitLab in CI | Source repository |
+| `OLR_BRANCH` | `1.9.0` | Source branch or tag |
+| `REGISTRY_PATH` | `ghcr.io/tarantool`, or `CI_REGISTRY_IMAGE` in CI | Image registry and namespace |
+| `DOCKER_IMAGE_NAME` | `openlogreplicator` | Application image name |
+| `BASE_IMAGE_NAME` | GHCR, or the project registry in CI | Build base image |
+| `GIDOLR`, `UIDOLR`, `GIDORA` | Current user IDs and `54322` | Runtime user and Oracle group IDs |
 
-## Support OpenLogReplicator-docker
+For example, to use a locally built base image:
 
-If you feel that I should receive some feedback from the world to continue with my hard work - feel free to make a **donation** or become a **sponsor**.
+```bash
+BASE_IMAGE_NAME=openlogreplicator-base:local ./build-dev.sh
+```
 
-I am very grateful for any amount you donate.
+## Build the base image
 
-[![Sponsor via GitHub](https://img.shields.io/badge/Sponsor-GitHub-brightgreen)](https://github.com/sponsors/bersler)
-[![Librepay](https://img.shields.io/badge/Donate-Librepay-orange)](https://liberapay.com/bersler)
-[![Buy Me a Coffee](https://img.shields.io/badge/Donate-Coffee-yellow)](https://www.buymeacoffee.com/bersler)
+```bash
+docker build \
+  -t openlogreplicator-base:local \
+  -f Dockerfile.base \
+  --build-arg IMAGE=debian \
+  --build-arg VERSION=13.0 \
+  --build-arg WITHORACLE=1 \
+  --build-arg WITHKAFKA=1 \
+  --build-arg WITHPROMETHEUS=1 \
+  --build-arg WITHPROTOBUF=1 \
+  .
+```
+
+## Build the test image
+
+Regression tests are included in the OpenLogReplicator source repository. Build
+an image containing those tests with:
+
+```bash
+WITHTESTS=1 OLR_USER=root ./build-dev.sh
+```
+
+See the
+[`tests/README.md`](https://github.com/tarantool/openlogreplicator/blob/1.9.0/tests/README.md)
+file in the source repository for test execution instructions.
+
+## Solaris SPARC cross-compilation
+
+The Solaris base image requires two files that cannot be distributed by this
+repository:
+
+- `solaris-sysroot.tar.gz`
+- `oracle-instantclient-18.3-solaris-sparc.tar.gz`
+
+Place both archives in the repository root, then build the cross-compilation
+base and application images:
+
+```bash
+docker build \
+  -t openlogreplicator-base-solaris:local \
+  -f Dockerfile.base.solaris \
+  --build-arg BASE_IMAGE=ghcr.io/tarantool/openlogreplicator-base-centos7:latest \
+  .
+
+BASE_IMAGE_NAME=openlogreplicator-base-solaris:local ./build-solaris.sh
+```
+
+The two proprietary archives are ignored by Git.
+
+The internal GitLab CI downloads these archives from Nexus before the Solaris
+base build. Nexus credentials are not passed to the Dockerfile.
+
+## Extract a native package
+
+Extract a Linux binary and its shared libraries from a built image:
+
+```bash
+./extract-binary.sh ghcr.io/tarantool/openlogreplicator:<tag>
+```
+
+Extract a Solaris SPARC package:
+
+```bash
+./extract-solaris.sh ghcr.io/tarantool/openlogreplicator:<tag>-solaris
+```
+
+## License
+
+This repository is licensed under the GNU Affero General Public License. See
+[LICENSE](LICENSE).

@@ -1,0 +1,8 @@
+.idea/
+OpenLogReplicator/
+extracted/
+extracted-solaris/
+build.env
+openlogreplicator-*.tar.gz
+solaris-sysroot.tar.gz
+oracle-instantclient-18.3-solaris-sparc.tar.gz
