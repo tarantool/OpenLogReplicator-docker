@@ -24,7 +24,9 @@ UIDOLR=${UIDOLR:=`id -r -u ${USER}`}
 GIDORA=${GIDORA:=54322}
 OLR_BRANCH=${OLR_BRANCH:=2.0.0}
 
-if [ -n "${CI_JOB_TOKEN:-}" ]; then
+if [ -n "${OLR_REPO_URL:-}" ]; then
+    : # explicit override
+elif [ -n "${CI_JOB_TOKEN:-}" ]; then
     if [ -z "${OLR_INTERNAL_REPO_URL:-}" ]; then
         echo "OLR_INTERNAL_REPO_URL must be set when CI_JOB_TOKEN is set" >&2
         exit 1

@@ -5,7 +5,7 @@
 #
 # Правило требует >=1 approve от владельца зоны и работает только при включённой
 # настройке "Require approval from code owners" на защищённых ветках (tarantool).
-# См. https://gitlab.corp.mail.ru/tarantool/cdc/v9/tarantool-cdc/-/blob/master/docs/internal/process/code-review.md
+# Порядок ревью описан во внутреннем регламенте команды.
 #
 # Владельцы назначаются явно, а не выводятся из git-истории.
 #

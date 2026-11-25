@@ -21,12 +21,21 @@
 # -------------------------------
 # This image contains all build dependencies for OpenLogReplicator.
 # It is used as a base image for building OLR itself.
+#
+# NEXUS_REPOSITORY_URL (the base URL of a Nexus instance, empty by default)
+# switches all downloads to the Nexus proxies of the upstreams. GitLab CI sets
+# it; without it the image is built from the public upstreams.
+# Oracle Instant Client is proprietary and is not downloaded here: put the
+# archives into oracle-instantclient/ first (fetch-oracle-instantclient.sh).
 
 ARG IMAGE=debian
 ARG VERSION=13.0
 FROM ${IMAGE}:${VERSION} AS olr-base
 
 ARG ARCH=x86_64
+ARG NEXUS_REPOSITORY_URL=
+ARG GITHUB_URL=${NEXUS_REPOSITORY_URL:+${NEXUS_REPOSITORY_URL}/raw-github-remote}
+ARG GITHUB_URL=${GITHUB_URL:-https://github.com}
 ARG GIDOLR=1001
 ARG UIDOLR=1001
 ARG GIDORA=54322
@@ -64,31 +73,17 @@ RUN set -eu; \
         useradd -u ${UIDOLR} user1 -g ${GIDOLR} -d /home/user1; \
     fi
 
-# 1. Install packages
+# 1. Install packages (Nexus APT/yum proxies when NEXUS_REPOSITORY_URL is set)
+COPY configure-mirrors.sh /usr/local/bin/configure-mirrors.sh
 RUN set -eu; \
+    configure-mirrors.sh "${NEXUS_REPOSITORY_URL}"; \
     if [ -r /etc/centos-release ]; then \
-        if [ -r /etc/yum.repos.d/CentOS-Base.repo ]; then \
-            sed -i \
-                -e 's|^mirrorlist=|#mirrorlist=|g' \
-                -e 's|^#baseurl=http://mirror\.centos\.org/centos/\$releasever/os/\$basearch/|baseurl=https://vault.centos.org/7.9.2009/os/$basearch/|g' \
-                -e 's|^#baseurl=http://mirror\.centos\.org/centos/\$releasever/updates/\$basearch/|baseurl=https://vault.centos.org/7.9.2009/updates/$basearch/|g' \
-                -e 's|^#baseurl=http://mirror\.centos\.org/centos/\$releasever/extras/\$basearch/|baseurl=https://vault.centos.org/7.9.2009/extras/$basearch/|g' \
-                -e 's|^#baseurl=http://mirror\.centos\.org/centos/\$releasever/centosplus/\$basearch/|baseurl=https://vault.centos.org/7.9.2009/centosplus/$basearch/|g' \
-                /etc/yum.repos.d/CentOS-Base.repo; \
-        fi; \
         yum -y install epel-release coreutils which centos-release-scl; \
-        sed -i \
-            -e 's|^mirrorlist=|#mirrorlist=|g' \
-            -e 's|^#baseurl=http://mirror\.centos\.org/centos/7/sclo/\$basearch/rh/|baseurl=http://vault.centos.org/centos/7/sclo/$basearch/rh/|g' \
-            /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo; \
-        sed -i 's|^enabled=1|enabled=0|g' /etc/yum.repos.d/CentOS-SCLo-scl.repo; \
+        configure-mirrors.sh "${NEXUS_REPOSITORY_URL}"; \
         yum -y install devtoolset-9-gcc devtoolset-9-gcc-c++; \
         yum -y install autoconf automake diffutils file libaio libaio-devel libasan libubsan libnsl libtool make patch tar unzip wget zlib-devel git gdb cmake3 kernel-headers; \
         ln -s /usr/bin/cmake3 /usr/bin/cmake; \
     elif [ -r /etc/debian_version ]; then \
-        if [ -r /etc/apt/sources.list.d/debian.sources ]; then \
-            sed -i 's/deb.debian.org/mirror.yandex.ru/g' /etc/apt/sources.list.d/debian.sources; \
-        fi; \
         apt-get update; \
         if [ "$(cat /etc/debian_version)" = "12.0" ]; then \
             apt-get -y install file gcc g++ libaio1 libasan8 libubsan1 libtool libz-dev make patch unzip wget cmake git curl; \
@@ -98,42 +93,27 @@ RUN set -eu; \
         fi; \
     fi
 
-# 2. rapidjson
+# 2. rapidjson. The upstream commit 3b2441b8 is vendored in patches/: the
+#    Nexus raw proxy does not serve GitHub commit diffs.
+COPY patches/rapidjson-3b2441b87f99ab65f37b141a7b548ebadb607b96.diff /tmp/
 RUN set -eu; \
     cd /opt; \
-    wget https://github.com/Tencent/rapidjson/archive/refs/tags/v${RAPIDJSON_VERSION}.tar.gz; \
+    wget ${GITHUB_URL}/Tencent/rapidjson/archive/refs/tags/v${RAPIDJSON_VERSION}.tar.gz; \
     tar xzvf v${RAPIDJSON_VERSION}.tar.gz; \
     rm v${RAPIDJSON_VERSION}.tar.gz; \
-    ln -s rapidjson-${RAPIDJSON_VERSION} rapidjson
-
-RUN set -eu; \
+    ln -s rapidjson-${RAPIDJSON_VERSION} rapidjson; \
     if [ "${RAPIDJSON_VERSION}" = "1.1.0" ]; then \
         cd /opt/rapidjson; \
-        wget https://github.com/Tencent/rapidjson/commit/3b2441b87f99ab65f37b141a7b548ebadb607b96.diff; \
-        patch -p1 < 3b2441b87f99ab65f37b141a7b548ebadb607b96.diff; \
-        rm 3b2441b87f99ab65f37b141a7b548ebadb607b96.diff; \
-    fi
+        patch -p1 < /tmp/rapidjson-3b2441b87f99ab65f37b141a7b548ebadb607b96.diff; \
+    fi; \
+    rm /tmp/rapidjson-3b2441b87f99ab65f37b141a7b548ebadb607b96.diff
 
-# 3. Oracle Instant Client
-RUN set -eu; \
-    if [ "${WITHORACLE:+1}" != "" ]; then \
-        cd /opt; \
-        wget https://download.oracle.com/otn_software/linux/instantclient/${ORACLE_MAJOR}${ORACLE_MINOR}000/instantclient-basic-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
-        unzip -o instantclient-basic-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
-        rm instantclient-basic-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
-        rm -rf META-INF; \
-        wget https://download.oracle.com/otn_software/linux/instantclient/${ORACLE_MAJOR}${ORACLE_MINOR}000/instantclient-sdk-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
-        unzip -o instantclient-sdk-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
-        rm instantclient-sdk-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
-        rm -rf META-INF; \
-    fi
-
-# 4. Kafka (librdkafka)
+# 3. Kafka (librdkafka)
 RUN set -eu; \
     if [ "${WITHKAFKA:+1}" != "" ]; then \
         if [ -r /etc/centos-release ]; then export MANPATH=""; source /opt/rh/devtoolset-9/enable; fi; \
         cd /opt; \
-        wget https://github.com/confluentinc/librdkafka/archive/refs/tags/v${LIBRDKAFKA_VERSION}.tar.gz; \
+        wget ${GITHUB_URL}/confluentinc/librdkafka/archive/refs/tags/v${LIBRDKAFKA_VERSION}.tar.gz; \
         tar xzvf v${LIBRDKAFKA_VERSION}.tar.gz; \
         rm v${LIBRDKAFKA_VERSION}.tar.gz; \
         cd /opt/librdkafka-${LIBRDKAFKA_VERSION}; \
@@ -142,12 +122,12 @@ RUN set -eu; \
         make install; \
     fi
 
-# 5. Prometheus
+# 4. Prometheus
 RUN set -eu; \
     if [ "${WITHPROMETHEUS:+1}" != "" ]; then \
         if [ -r /etc/centos-release ]; then export MANPATH=""; source /opt/rh/devtoolset-9/enable; fi; \
         cd /opt; \
-        wget https://github.com/jupp0r/prometheus-cpp/releases/download/v${PROMETHEUS_VERSION}/prometheus-cpp-with-submodules.tar.gz; \
+        wget ${GITHUB_URL}/jupp0r/prometheus-cpp/releases/download/v${PROMETHEUS_VERSION}/prometheus-cpp-with-submodules.tar.gz; \
         tar xzvf prometheus-cpp-with-submodules.tar.gz; \
         rm prometheus-cpp-with-submodules.tar.gz; \
         cd /opt/prometheus-cpp-with-submodules; \
@@ -159,12 +139,12 @@ RUN set -eu; \
         ln -s /opt/prometheus/lib64 /opt/prometheus/lib; \
     fi
 
-# 6. Protobuf
+# 5. Protobuf
 RUN set -eu; \
     if [ "${WITHPROTOBUF:+1}" != "" ]; then \
         if [ -r /etc/centos-release ]; then export MANPATH=""; source /opt/rh/devtoolset-9/enable; fi; \
         cd /opt; \
-        wget https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION_DIR}/protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
+        wget ${GITHUB_URL}/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION_DIR}/protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
         tar xzvf protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
         rm protobuf-cpp-${PROTOBUF_VERSION}.tar.gz; \
         cd /opt/protobuf-${PROTOBUF_VERSION}; \
@@ -175,3 +155,25 @@ RUN set -eu; \
 
 # Copy run.sh for the final stage
 COPY run.sh /opt
+
+# Oracle Instant Client is unpacked in a throwaway stage so that the archives
+# from the build context (see fetch-oracle-instantclient.sh; the directory may
+# be empty without WITHORACLE) never end up in a layer of the final image.
+# Multi-stage keeps this working with the classic builder (no RUN --mount).
+FROM olr-base AS oracle
+ARG WITHORACLE
+COPY oracle-instantclient/ /tmp/oracle-instantclient/
+RUN set -eu; \
+    mkdir /oracle; \
+    if [ "${WITHORACLE:+1}" != "" ]; then \
+        cd /oracle; \
+        unzip -o /tmp/oracle-instantclient/instantclient-basic-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
+        rm -rf META-INF; \
+        unzip -o /tmp/oracle-instantclient/instantclient-sdk-linux.x64-${ORACLE_MAJOR}.${ORACLE_MINOR}.0.0.0.zip; \
+        rm -rf META-INF; \
+    fi
+
+FROM olr-base
+COPY --from=oracle /oracle/ /opt/
+# The package manager must not keep pointing to the build-time Nexus
+RUN configure-mirrors.sh --public

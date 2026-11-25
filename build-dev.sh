@@ -24,7 +24,9 @@ UIDOLR=${UIDOLR:=`id -r -u ${USER}`}
 GIDORA=${GIDORA:=54322}
 OLR_BRANCH=${OLR_BRANCH:=2.0.0}
 
-if [ -n "${CI_JOB_TOKEN:-}" ]; then
+if [ -n "${OLR_REPO_URL:-}" ]; then
+    : # explicit override
+elif [ -n "${CI_JOB_TOKEN:-}" ]; then
     if [ -z "${OLR_INTERNAL_REPO_URL:-}" ]; then
         echo "OLR_INTERNAL_REPO_URL must be set when CI_JOB_TOKEN is set" >&2
         exit 1
@@ -32,6 +34,12 @@ if [ -n "${CI_JOB_TOKEN:-}" ]; then
     OLR_REPO_URL=${OLR_INTERNAL_REPO_URL}
 else
     OLR_REPO_URL="https://github.com/tarantool/openlogreplicator.git"
+fi
+
+# Nexus repository base URL for the dependency mirrors (see README). Empty
+# means public upstreams. CI derives it from NEXUS_URL and must not fall back.
+if [ -z "${NEXUS_REPOSITORY_URL:-}" ] && [ -n "${CI_JOB_TOKEN:-}" ]; then
+    . "$(dirname "$0")/nexus-repository-url.sh"
 fi
 
 # Clone OpenLogReplicator if not exists
@@ -59,23 +67,33 @@ cd ..
 REGISTRY_PATH=${REGISTRY_PATH:-${CI_REGISTRY_IMAGE:-ghcr.io/tarantool}}
 IMAGE_NAME=${DOCKER_IMAGE_NAME:-openlogreplicator}
 OLR_IMAGE=${OLR_IMAGE:=${REGISTRY_PATH}/${IMAGE_NAME}:${GIT_DESCRIBE}-dev}
-BUILD_ARGS=""
 
 if [ "$GIDOLR" -eq "0" ] || [ "$UIDOLR" -eq "0" ]; then
     echo "Failed, you are not allowed to run OpenLogReplicator as root"
     exit 1
 fi
 
-if [ ! -z "${OPENLOGREPLICATOR_VERSION}" ]; then
-    BUILD_ARGS="--build-arg OPENLOGREPLICATOR_VERSION=${OPENLOGREPLICATOR_VERSION}"
+# Optional build args are collected as positional parameters so their values
+# (notably NEXUS_REPOSITORY_URL) are never word-split or glob-expanded.
+set --
+if [ -n "${OPENLOGREPLICATOR_VERSION:-}" ]; then
+    set -- "$@" --build-arg "OPENLOGREPLICATOR_VERSION=${OPENLOGREPLICATOR_VERSION}"
 fi
 
 if [ -n "${WITHTESTS:-}" ]; then
-    BUILD_ARGS="${BUILD_ARGS} --build-arg WITHTESTS=${WITHTESTS}"
+    set -- "$@" --build-arg "WITHTESTS=${WITHTESTS}"
 fi
 
 if [ -n "${OLR_USER:-}" ]; then
-    BUILD_ARGS="${BUILD_ARGS} --build-arg OLR_USER=${OLR_USER}"
+    set -- "$@" --build-arg "OLR_USER=${OLR_USER}"
+fi
+
+if [ -n "${NEXUS_REPOSITORY_URL:-}" ]; then
+    set -- "$@" --build-arg "NEXUS_REPOSITORY_URL=${NEXUS_REPOSITORY_URL}"
+fi
+
+if [ -n "${ORACLE_CLIENT19_VERSION:-}" ]; then
+    set -- "$@" --build-arg "ORACLE_CLIENT19_VERSION=${ORACLE_CLIENT19_VERSION}"
 fi
 
 echo "Building image: ${OLR_IMAGE}"
@@ -91,7 +109,7 @@ fi
 docker build \
 -t ${OLR_IMAGE} \
 -f Dockerfile \
-${BUILD_ARGS} \
+"$@" \
 --build-arg BASE_IMAGE=${BASE_IMAGE_NAME} \
 --build-arg GIDOLR=${GIDOLR} \
 --build-arg UIDOLR=${UIDOLR} \

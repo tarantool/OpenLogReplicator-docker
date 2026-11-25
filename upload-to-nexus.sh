@@ -19,8 +19,16 @@ UPLOAD_URL="${NEXUS_URL}/${NEXUS_PATH}/${ARCHIVE_NAME}"
 echo "Uploading ${ARCHIVE_NAME} to Nexus..."
 echo "URL: ${UPLOAD_URL}"
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    -u "${NEXUS_USER}:${NEXUS_PASS}" \
+# The credentials go to curl through stdin so that they do not show up in the
+# process list; backslashes and quotes are escaped for the curl config syntax.
+curl_auth() {
+    printf 'user = "%s:%s"\n' \
+        "$(printf '%s' "$NEXUS_USER" | sed 's/[\\"]/\\&/g')" \
+        "$(printf '%s' "$NEXUS_PASS" | sed 's/[\\"]/\\&/g')" |
+        curl --config - "$@"
+}
+
+HTTP_CODE=$(curl_auth -s -o /dev/null -w "%{http_code}" \
     --upload-file "${ARCHIVE_NAME}" \
     "${UPLOAD_URL}")
 

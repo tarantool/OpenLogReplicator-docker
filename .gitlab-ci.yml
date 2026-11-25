@@ -13,6 +13,10 @@ variables:
   GIDOLR: "1001"
   UIDOLR: "1001"
   GIDORA: "54322"
+  # Oracle Instant Client archives to fetch; keep in sync with Dockerfile.base
+  # (ORACLE_MAJOR/MINOR) and Dockerfile (ORACLE_CLIENT19_VERSION), checked by tests/
+  ORACLE_CLIENT_VERSION: "23.26.0.0.0"
+  ORACLE_CLIENT19_VERSION: "19.28.0.0.0dbru"
   DOCKER_IMAGE_NAME: openlogreplicator
   NEXUS_DEV_PATH: "openlogreplicator/dev"
   NEXUS_PROD_PATH: "openlogreplicator/prod"
@@ -33,24 +37,19 @@ stages:
 .docker:
   image: "$OLR_CI_IMAGE"
   variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
     KUBERNETES_CPU_REQUEST: "2"
-    KUBERNETES_CPU_LIMIT: "8"
     KUBERNETES_MEMORY_REQUEST: "4Gi"
     KUBERNETES_MEMORY_LIMIT: "8Gi"
-    KUBERNETES_HELPER_CPU_REQUEST: "0.5"
-    KUBERNETES_HELPER_CPU_LIMIT: "1"
-    KUBERNETES_HELPER_MEMORY_REQUEST: "1Gi"
-    KUBERNETES_HELPER_MEMORY_LIMIT: "2Gi"
-    KUBERNETES_SERVICE_EPHEMERAL_STORAGE_LIMIT: "100Gi"
-    KUBERNETES_SERVICE_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_SERVICE_MEMORY_REQUEST: "2Gi"
     KUBERNETES_SERVICE_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_SERVICE_EPHEMERAL_STORAGE_LIMIT: "50Gi"
   tags:
-    - $OLR_CI_RUNNER
+    - $CI_RUNNER
+  before_script:
+    - timeout 120 sh -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   services:
-    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26.1.4-dind
-      alias: docker
+    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:27.5.1-dind
 
 # =============================================================================
 # BASE IMAGES (dependencies only)
@@ -67,22 +66,29 @@ build base image debian:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
       changes:
         - Dockerfile.base
+        - configure-mirrors.sh
+        - fetch-oracle-instantclient.sh
+        - patches/*
       when: always
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
     - if: '$CI_PIPELINE_SOURCE == "trigger"'
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
       BASE_IMAGE_NAME="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
       LATEST_BASE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+
+      . ./nexus-repository-url.sh
+
+      echo "Downloading Oracle Instant Client from Nexus"
+      ./fetch-oracle-instantclient.sh "${ORACLE_CLIENT_VERSION}"
 
       echo "Building Debian base image: ${BASE_IMAGE_NAME}"
       docker build \
         -t "${BASE_IMAGE_NAME}" \
         -t "${LATEST_BASE}" \
         -f Dockerfile.base \
+        --build-arg NEXUS_REPOSITORY_URL="${NEXUS_REPOSITORY_URL}" \
         --build-arg IMAGE=debian \
         --build-arg VERSION=13.0 \
         --build-arg GIDOLR=${GIDOLR} \
@@ -108,22 +114,29 @@ build base image centos7:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
       changes:
         - Dockerfile.base
+        - configure-mirrors.sh
+        - fetch-oracle-instantclient.sh
+        - patches/*
       when: always
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
     - if: '$CI_PIPELINE_SOURCE == "trigger"'
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
       BASE_IMAGE_NAME="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
       LATEST_BASE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
+
+      . ./nexus-repository-url.sh
+
+      echo "Downloading Oracle Instant Client from Nexus"
+      ./fetch-oracle-instantclient.sh "${ORACLE_CLIENT_VERSION}"
 
       echo "Building CentOS 7 base image: ${BASE_IMAGE_NAME}"
       docker build \
         -t "${BASE_IMAGE_NAME}" \
         -t "${LATEST_BASE}" \
         -f Dockerfile.base \
+        --build-arg NEXUS_REPOSITORY_URL="${NEXUS_REPOSITORY_URL}" \
         --build-arg IMAGE=centos \
         --build-arg VERSION=7 \
         --build-arg GIDOLR=${GIDOLR} \
@@ -149,12 +162,11 @@ build base image solaris:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
       changes:
         - Dockerfile.base.solaris
+        - configure-mirrors.sh
       when: always
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
     - if: '$CI_PIPELINE_SOURCE == "trigger"'
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
       BASE_IMAGE_NAME="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
@@ -163,14 +175,21 @@ build base image solaris:
       : "${NEXUS_URL:?NEXUS_URL must be set}"
       : "${NEXUS_USER:?NEXUS_USER must be set}"
       : "${NEXUS_PASS:?NEXUS_PASS must be set}"
+      . ./nexus-repository-url.sh
+
+      # Credentials go to curl through stdin, not the process list
+      curl_auth() {
+        printf 'user = "%s:%s"\n' \
+          "$(printf '%s' "$NEXUS_USER" | sed 's/[\\"]/\\&/g')" \
+          "$(printf '%s' "$NEXUS_PASS" | sed 's/[\\"]/\\&/g')" |
+          curl --config - "$@"
+      }
 
       echo "Downloading proprietary Solaris build artifacts"
-      curl --fail --location --silent --show-error \
-        --user "${NEXUS_USER}:${NEXUS_PASS}" \
+      curl_auth --fail --location --silent --show-error \
         "${NEXUS_URL%/}/openlogreplicator/solaris/solaris-sysroot.tar.gz" \
         --output solaris-sysroot.tar.gz
-      curl --fail --location --silent --show-error \
-        --user "${NEXUS_USER}:${NEXUS_PASS}" \
+      curl_auth --fail --location --silent --show-error \
         "${NEXUS_URL%/}/openlogreplicator/solaris/oracle-instantclient-18.3-solaris-sparc.tar.gz" \
         --output oracle-instantclient-18.3-solaris-sparc.tar.gz
 
@@ -179,6 +198,7 @@ build base image solaris:
         -t "${BASE_IMAGE_NAME}" \
         -t "${LATEST_BASE}" \
         -f Dockerfile.base.solaris \
+        --build-arg NEXUS_REPOSITORY_URL="${NEXUS_REPOSITORY_URL}" \
         --build-arg BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_IMAGE_NAME}-base-centos7:latest" \
         --build-arg GIDOLR=${GIDOLR} \
         --build-arg UIDOLR=${UIDOLR} \
@@ -216,6 +236,26 @@ unit tests:
         echo "=== $t ==="
         g++ -std=c++17 -I/opt/rapidjson/include "$t" -o /tmp/ut && /tmp/ut
       done
+
+# ----------------------------------------------------------------------------
+# Build script / Dockerfile invariants (tests/test-build-defaults.sh). The test
+# stubs out docker and git, so it needs no dind service.
+# ----------------------------------------------------------------------------
+build defaults:
+  stage: test
+  interruptible: true
+  tags:
+    - $CI_RUNNER
+  image: "$OLR_CI_IMAGE"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && $BUILD_TYPE == "dev"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+  script:
+    - sh tests/test-build-defaults.sh
 
 # ----------------------------------------------------------------------------
 # Regression tests against Oracle XE 21c and Oracle Free 23c.
@@ -304,8 +344,6 @@ build dev image debian:
       when: manual
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
       when: always
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
       BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
@@ -365,13 +403,14 @@ build dev image centos7:
       when: manual
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
       when: always
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
 
       BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
       echo "Using base image: ${BASE_IMAGE}"
+
+      # Oracle Instant Client 19 for the CentOS 7 build
+      ./fetch-oracle-instantclient.sh "${ORACLE_CLIENT19_VERSION}"
 
       # Build with custom base image
       BASE_IMAGE_NAME="${BASE_IMAGE}" ./build-dev.sh
@@ -423,8 +462,6 @@ build dev image solaris:
       when: manual
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
       when: always
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
       BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
@@ -473,8 +510,6 @@ build release image debian:
       when: always
     - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
       when: always
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
       BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
@@ -531,12 +566,13 @@ build release image centos7:
       when: always
     - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
       when: always
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
       BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
       echo "Using base image: ${BASE_IMAGE}"
+
+      # Oracle Instant Client 19 for the CentOS 7 build
+      ./fetch-oracle-instantclient.sh "${ORACLE_CLIENT19_VERSION}"
 
       # Build with custom base image
       BASE_IMAGE_NAME="${BASE_IMAGE}" ./build-prod.sh
@@ -587,8 +623,6 @@ build release image solaris:
       when: always
     - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
       when: always
-  before_script:
-    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
   script:
     - |
       BASE_IMAGE="${CI_REGISTRY_IMAGE}/${DOCKER_BASE_IMAGE_NAME}:latest"
